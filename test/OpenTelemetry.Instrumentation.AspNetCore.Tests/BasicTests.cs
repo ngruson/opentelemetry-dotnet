@@ -23,6 +23,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Moq;
 using OpenTelemetry.Context.Propagation;
@@ -843,7 +844,8 @@ public sealed class BasicTests
     public async Task DiagnosticSourceCallbacksAreReceivedOnlyForSubscribedEvents()
     {
         int numberOfUnSubscribedEvents = 0;
-        int numberofSubscribedEvents = 0;
+        int numberOfSubscribedEvents = 0;
+
         void ConfigureTestServices(IServiceCollection services)
         {
             this.tracerProvider = Sdk.CreateTracerProviderBuilder()
@@ -856,19 +858,19 @@ public sealed class BasicTests
                             {
                                 case HttpInListener.OnStartEvent:
                                     {
-                                        numberofSubscribedEvents++;
+                                        numberOfSubscribedEvents++;
                                     }
 
                                     break;
                                 case HttpInListener.OnStopEvent:
                                     {
-                                        numberofSubscribedEvents++;
+                                        numberOfSubscribedEvents++;
                                     }
 
                                     break;
                                 case HttpInListener.OnMvcBeforeActionEvent:
                                     {
-                                        numberofSubscribedEvents++;
+                                        numberOfSubscribedEvents++;
                                     }
 
                                     break;
@@ -882,6 +884,10 @@ public sealed class BasicTests
                         },
                     })
                 .Build();
+
+            services.AddOpenTelemetry()
+                .WithTracing(builder => builder
+                    .AddInstrumentation(() => this.tracerProvider));
         }
 
         // Arrange
@@ -900,15 +906,16 @@ public sealed class BasicTests
         }
 
         Assert.Equal(0, numberOfUnSubscribedEvents);
-        Assert.Equal(3, numberofSubscribedEvents);
+        Assert.Equal(3, numberOfSubscribedEvents);
     }
 
     [Fact]
     public async Task DiagnosticSourceExceptionCallbackIsReceivedForUnHandledException()
     {
         int numberOfUnSubscribedEvents = 0;
-        int numberofSubscribedEvents = 0;
+        int numberOfSubscribedEvents = 0;
         int numberOfExceptionCallbacks = 0;
+
         void ConfigureTestServices(IServiceCollection services)
         {
             this.tracerProvider = Sdk.CreateTracerProviderBuilder()
@@ -921,19 +928,19 @@ public sealed class BasicTests
                             {
                                 case HttpInListener.OnStartEvent:
                                     {
-                                        numberofSubscribedEvents++;
+                                        numberOfSubscribedEvents++;
                                     }
 
                                     break;
                                 case HttpInListener.OnStopEvent:
                                     {
-                                        numberofSubscribedEvents++;
+                                        numberOfSubscribedEvents++;
                                     }
 
                                     break;
                                 case HttpInListener.OnMvcBeforeActionEvent:
                                     {
-                                        numberofSubscribedEvents++;
+                                        numberOfSubscribedEvents++;
                                     }
 
                                     break;
@@ -943,7 +950,7 @@ public sealed class BasicTests
                                 case HttpInListener.OnUnhandledHostingExceptionEvent:
                                 case HttpInListener.OnUnHandledDiagnosticsExceptionEvent:
                                     {
-                                        numberofSubscribedEvents++;
+                                        numberOfSubscribedEvents++;
                                         numberOfExceptionCallbacks++;
                                     }
 
@@ -958,6 +965,10 @@ public sealed class BasicTests
                         },
                     })
                 .Build();
+
+            services.AddOpenTelemetry()
+                .WithTracing(builder => builder
+                    .AddInstrumentation(() => this.tracerProvider));
         }
 
         // Arrange
@@ -984,18 +995,20 @@ public sealed class BasicTests
 
         Assert.Equal(1, numberOfExceptionCallbacks);
         Assert.Equal(0, numberOfUnSubscribedEvents);
-        Assert.Equal(4, numberofSubscribedEvents);
+        Assert.Equal(4, numberOfSubscribedEvents);
     }
 
     [Fact(Skip = "https://github.com/open-telemetry/opentelemetry-dotnet/issues/4884")]
     public async Task DiagnosticSourceExceptionCallBackIsNotReceivedForExceptionsHandledInMiddleware()
     {
         int numberOfUnSubscribedEvents = 0;
-        int numberofSubscribedEvents = 0;
+        int numberOfSubscribedEvents = 0;
         int numberOfExceptionCallbacks = 0;
 
-        // configure SDK
-        using var tracerprovider = Sdk.CreateTracerProviderBuilder()
+        void ConfigureTestServices(IServiceCollection services)
+        {
+            // configure SDK
+            this.tracerProvider = Sdk.CreateTracerProviderBuilder()
             .AddAspNetCoreInstrumentation(
                 new TestHttpInListener(new AspNetCoreInstrumentationOptions())
                 {
@@ -1005,13 +1018,13 @@ public sealed class BasicTests
                         {
                             case HttpInListener.OnStartEvent:
                                 {
-                                    numberofSubscribedEvents++;
+                                    numberOfSubscribedEvents++;
                                 }
 
                                 break;
                             case HttpInListener.OnStopEvent:
                                 {
-                                    numberofSubscribedEvents++;
+                                    numberOfSubscribedEvents++;
                                 }
 
                                 break;
@@ -1021,7 +1034,7 @@ public sealed class BasicTests
                             case HttpInListener.OnUnhandledHostingExceptionEvent:
                             case HttpInListener.OnUnHandledDiagnosticsExceptionEvent:
                                 {
-                                    numberofSubscribedEvents++;
+                                    numberOfSubscribedEvents++;
                                     numberOfExceptionCallbacks++;
                                 }
 
@@ -1037,45 +1050,43 @@ public sealed class BasicTests
                 })
                 .Build();
 
-        var builder = WebApplication.CreateBuilder();
-        builder.Logging.ClearProviders();
-        var app = builder.Build();
-
-        app.UseExceptionHandler(handler =>
-        {
-            handler.Run(async (ctx) =>
-            {
-                await ctx.Response.WriteAsync("handled").ConfigureAwait(false);
-            });
-        });
-
-        app.Map("/error", ThrowException);
-
-        static void ThrowException(IApplicationBuilder app)
-        {
-            app.Run(context =>
-            {
-                throw new Exception("CustomException");
-            });
+            services.AddOpenTelemetry()
+                .WithTracing(builder => builder
+                    .AddInstrumentation(() => this.tracerProvider));
         }
 
-        _ = app.RunAsync();
+        using (var client = this.factory
+            .WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureTestServices(ConfigureTestServices);
+                builder.ConfigureLogging(loggingBuilder => loggingBuilder.ClearProviders());
+                builder.Configure(app => app
+                    .UseExceptionHandler(handler =>
+                    {
+                        handler.Run(async (ctx) =>
+                        {
+                            await ctx.Response.WriteAsync("handled").ConfigureAwait(false);
+                        });
+                    }));
+            })
+            .CreateClient())
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, "/api/error");
 
-        using var client = new HttpClient();
-        try
-        {
-            await client.GetStringAsync("http://localhost:5000/error").ConfigureAwait(false);
-        }
-        catch
-        {
-            // ignore 500 error.
+                // Act
+                using var response = await client.SendAsync(request).ConfigureAwait(false);
+            }
+            catch
+            {
+                // ignore exception
+            }
         }
 
         Assert.Equal(0, numberOfExceptionCallbacks);
         Assert.Equal(0, numberOfUnSubscribedEvents);
-        Assert.Equal(2, numberofSubscribedEvents);
-
-        await app.DisposeAsync().ConfigureAwait(false);
+        Assert.Equal(2, numberOfSubscribedEvents);
     }
 
     [Fact]
@@ -1083,25 +1094,48 @@ public sealed class BasicTests
     {
         var exportedItems = new List<Activity>();
 
-        // configure SDK
-        using var tracerprovider = Sdk.CreateTracerProviderBuilder()
-            .AddAspNetCoreInstrumentation()
-            .AddInMemoryExporter(exportedItems)
+        void ConfigureTestServices(IServiceCollection services)
+        {
+            // configure SDK
+            this.tracerProvider = Sdk.CreateTracerProviderBuilder()
+                .AddAspNetCoreInstrumentation()
+                .AddInMemoryExporter(exportedItems)
+                .Build();
+
+            services.AddRouting();
+            services.AddOpenTelemetry()
+                .WithTracing(builder =>
+                    builder.AddInstrumentation(() => this.tracerProvider));
+        }
+
+        using var host = new HostBuilder()
+            .ConfigureServices(s =>
+            {
+                ConfigureTestServices(s);
+            })
+            .ConfigureWebHost(webHostBuilder =>
+                webHostBuilder
+                    .UseTestServer()
+                    .Configure(app =>
+                    {
+                        app.UseRouting();
+                        app.UseEndpoints(endpoints =>
+                        {
+                            endpoints.MapGet("/custom/abc", async context =>
+                            {
+                                await context.Response.WriteAsync("Hello World!");
+                            });
+                        });
+                    }))
             .Build();
 
-        var builder = WebApplication.CreateBuilder();
-        builder.Logging.ClearProviders();
-        var app = builder.Build();
+        await host.StartAsync();
 
-        app.MapGet("/custom/{name:alpha}", () => "Hello");
-
-        _ = app.RunAsync();
-
-        using var client = new HttpClient();
-        var res = await client.GetStringAsync("http://localhost:5000/custom/abc").ConfigureAwait(false);
+        using var client = host.GetTestClient();
+        var res = await client.GetStringAsync("/custom/abc").ConfigureAwait(false);
         Assert.NotNull(res);
 
-        tracerprovider.ForceFlush();
+        this.tracerProvider.ForceFlush();
         for (var i = 0; i < 10; i++)
         {
             if (exportedItems.Count > 0)
@@ -1125,8 +1159,6 @@ public sealed class BasicTests
 
         // After fix this should be /custom/{name:alpha}
         Assert.Equal("/custom/abc", activity.DisplayName);
-
-        await app.DisposeAsync().ConfigureAwait(false);
     }
 
     public void Dispose()
@@ -1195,16 +1227,10 @@ public sealed class BasicTests
             .Build();
     }
 
-    private class ExtractOnlyPropagator : TextMapPropagator
+    private class ExtractOnlyPropagator(ActivityContext activityContext, Baggage baggage) : TextMapPropagator
     {
-        private readonly ActivityContext activityContext;
-        private readonly Baggage baggage;
-
-        public ExtractOnlyPropagator(ActivityContext activityContext, Baggage baggage)
-        {
-            this.activityContext = activityContext;
-            this.baggage = baggage;
-        }
+        private readonly ActivityContext activityContext = activityContext;
+        private readonly Baggage baggage = baggage;
 
         public override ISet<string> Fields => throw new NotImplementedException();
 
@@ -1219,16 +1245,10 @@ public sealed class BasicTests
         }
     }
 
-    private class TestSampler : Sampler
+    private class TestSampler(SamplingDecision samplingDecision, IEnumerable<KeyValuePair<string, object>> attributes = null) : Sampler
     {
-        private readonly SamplingDecision samplingDecision;
-        private readonly IEnumerable<KeyValuePair<string, object>> attributes;
-
-        public TestSampler(SamplingDecision samplingDecision, IEnumerable<KeyValuePair<string, object>> attributes = null)
-        {
-            this.samplingDecision = samplingDecision;
-            this.attributes = attributes;
-        }
+        private readonly SamplingDecision samplingDecision = samplingDecision;
+        private readonly IEnumerable<KeyValuePair<string, object>> attributes = attributes;
 
         public override SamplingResult ShouldSample(in SamplingParameters samplingParameters)
         {
@@ -1236,14 +1256,9 @@ public sealed class BasicTests
         }
     }
 
-    private class TestHttpInListener : HttpInListener
+    private class TestHttpInListener(AspNetCoreInstrumentationOptions options) : HttpInListener(options)
     {
         public Action<string, object> OnEventWrittenCallback;
-
-        public TestHttpInListener(AspNetCoreInstrumentationOptions options)
-            : base(options)
-        {
-        }
 
         public override void OnEventWritten(string name, object payload)
         {
@@ -1253,17 +1268,11 @@ public sealed class BasicTests
         }
     }
 
-    private class TestNullHostActivityMiddlewareImpl : ActivityMiddleware.ActivityMiddlewareImpl
+    private class TestNullHostActivityMiddlewareImpl(string activitySourceName, string activityName) : ActivityMiddleware.ActivityMiddlewareImpl
     {
-        private ActivitySource activitySource;
+        private readonly ActivitySource activitySource = new(activitySourceName);
+        private readonly string activityName = activityName;
         private Activity activity;
-        private string activityName;
-
-        public TestNullHostActivityMiddlewareImpl(string activitySourceName, string activityName)
-        {
-            this.activitySource = new ActivitySource(activitySourceName);
-            this.activityName = activityName;
-        }
 
         public override void PreProcess(HttpContext context)
         {
@@ -1281,17 +1290,11 @@ public sealed class BasicTests
         }
     }
 
-    private class TestActivityMiddlewareImpl : ActivityMiddleware.ActivityMiddlewareImpl
+    private class TestActivityMiddlewareImpl(string activitySourceName, string activityName) : ActivityMiddleware.ActivityMiddlewareImpl
     {
-        private ActivitySource activitySource;
+        private readonly ActivitySource activitySource = new(activitySourceName);
+        private readonly string activityName = activityName;
         private Activity activity;
-        private string activityName;
-
-        public TestActivityMiddlewareImpl(string activitySourceName, string activityName)
-        {
-            this.activitySource = new ActivitySource(activitySourceName);
-            this.activityName = activityName;
-        }
 
         public override void PreProcess(HttpContext context)
         {
