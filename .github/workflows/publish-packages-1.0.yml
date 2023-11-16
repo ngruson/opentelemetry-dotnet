@@ -10,8 +10,9 @@ name: Pack and publish to MyGet
 on:
   release:
     types: [published]
-  schedule:
-    - cron: '0 0 * * *' # once in a day at 00:00
+  workflow_dispatch:
+  #schedule:
+    #- cron: '0 0 * * *' # once in a day at 00:00
 
 jobs:
   build-pack:
